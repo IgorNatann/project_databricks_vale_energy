@@ -8,16 +8,33 @@ desenvolvimento, não indicadores reais de uma distribuidora.
 |---|---|---|---|
 | RN-11 | A ingestão preserva defeitos para que possam ser explicados e tratados depois. | [Bronze](../src/pipelines/grid_intelligence/transformations/01_bronze.sql): `SELECT *`, sem filtros. | Os quatro Parquet foram comparados às tabelas, incluindo duplicatas, sem divergências. |
 | RN-12 | Cada registro precisa informar de onde veio e quando entrou na bronze. | Bronze acrescenta `arquivo_origem` e `ingerido_bronze_em`. | As duas colunas estavam preenchidas em todas as linhas ingeridas. |
-| Cadastro | Padronizar a classe e identificar bairros ausentes sem inventar dados. UCs sem chave ou conjunto são descartadas. | [Cadastro silver](../src/pipelines/grid_intelligence/transformations/10_silver_cadastro.sql): `lower`, `trim`, `coalesce` e `WHERE`. | 4.000 UCs na execução verificada. |
+| Cadastro | Padronizar a classe e identificar bairros ausentes sem inventar dados. UCs sem chave ou conjunto são descartadas e contadas. Reenvios não duplicam a UC: vale a versão válida mais recente (SCD tipo 1). | [Cadastro silver](../src/pipelines/grid_intelligence/transformations/10_silver_cadastro.sql): `lower`, `trim`, `coalesce`, expectation `chaves_preenchidas` e `row_number` por UC. | 4.000 UCs na execução verificada. A deduplicação protege o total de UCs, denominador de DEC e FEC. |
 | RN-01 | Só eventos de pelo menos 3 minutos participam de DEC e FEC; eventos curtos continuam na bronze. | [Interrupções silver](../src/pipelines/grid_intelligence/transformations/11_silver_interrupcoes.sql): limiar na configuração do pipeline. | 310 de 1.383 eventos ficaram fora da silver; 1.073 permaneceram. |
 | RN-02 e RN-05 | O insumo aditivo de DEC é horas de interrupção multiplicadas pelas UCs afetadas; a apuração é mensal. | Interrupções silver calcula `uc_horas_interrompidas` e `mes_apuracao` por evento. | Cálculo conferido para os 1.073 eventos válidos. |
 | RN-03 | O insumo aditivo de FEC é a quantidade de UCs afetadas: cada UC atingida conta uma interrupção. | [Continuidade gold](../src/pipelines/grid_intelligence/transformations/20_gold_continuidade.sql) soma `qtd_ucs_afetadas` em `uc_interrupcoes`; a [metric view](../src/sql/metric_view_continuidade.sql) divide pelo total de UCs. | Definida no projeto como contraparte da RN-02; não consta da sequência de prompts. |
-| Consumo | Leituras nulas, negativas ou acima do limite demonstrativo da classe não entram na silver; duplicatas mantêm a ingestão mais recente. | [Consumo silver](../src/pipelines/grid_intelligence/transformations/12_silver_consumo.sql): `WHERE`, `CASE` e `row_number`. | 5.801.814 leituras; nenhuma chave UC × dia repetida na execução verificada. |
+| Consumo | Leituras de UC fora do cadastro, nulas, negativas ou acima do limite demonstrativo da classe não entram na silver; duplicatas mantêm a ingestão válida mais recente. | [Consumo silver](../src/pipelines/grid_intelligence/transformations/12_silver_consumo.sql): expectations `uc_cadastrada` e `leitura_plausivel`, aplicadas antes do `row_number`. | 5.801.814 leituras; nenhuma chave UC × dia repetida na execução verificada. |
 | RN-06 a RN-08 | Comparar a UC com seu próprio histórico e com a variação do conjunto. A saída é uma prioridade explicável de visita técnica. | O baseline usa os últimos 30 dias e os 90 anteriores. A gold compara os dois eixos e o sinal do medidor. | Limiares demonstrativos aprovados e configuráveis: queda superior a 30% e variação do conjunto de até 10%. |
 | RN-09 | Remover dados pessoais antes da análise de conteúdo. | [Rota com IA](../src/pipelines/grid_intelligence/transformations/13_silver_chamados.py) e [rota por regras](../src/pipelines/grid_intelligence_regras/transformations/13_silver_chamados.sql): a tabela enriquecida lê a anonimizada. | Na rota com IA, sete textos sem resposta de anonimização foram mantidos como `[RESTRITO]`. |
 | RN-10 | A leitura do nome, telefone e texto original precisa de controle de acesso separado da anonimização. | [Governança](../src/sql/governanca_dado_pessoal.sql): máscaras por grupo na bronze, reaplicadas pelo job. | A vinculação das três máscaras e o acesso do membro autorizado foram verificados; falta testar uma identidade fora do grupo. |
 | RN-04 e RN-14 | DEC/FEC têm definição única e as entidades gold levam descrição de negócio. | A tabela de continuidade guarda insumos e a metric view contém as medidas. | A base considera o cadastro atual e inclui meses sem eventos no período observado. |
 | RN-13 | O agente deve acessar apenas a gold. | [Definição do Genie](../src/genie/grid_intelligence.json): quatro fontes gold configuradas. | Os SQLs observados nos testes consultaram somente gold; a restrição de fontes não substitui as permissões do usuário. |
+
+## Qualidade medida no pipeline
+
+A silver não descarta linhas com `WHERE` silencioso. Cada critério de qualidade é uma
+expectation do Lakeflow, e o event log do pipeline registra quantas linhas passaram e
+quantas violaram cada uma.
+
+| Tabela | Expectation | Ação |
+|---|---|---|
+| `silver.unidades_consumidoras` | `chaves_preenchidas` | Descarta a linha |
+| `silver.consumo_diario` | `uc_cadastrada`, `leitura_plausivel` | Descarta a linha |
+| `silver.interrupcoes_validas` | `evento_identificado`, `periodo_coerente`, `ucs_afetadas_positivas` | Só registra |
+
+Nas interrupções, o filtro de duração continua no `WHERE` porque é regra regulatória
+(RN-01), não defeito de dado. As expectations de cadastro e consumo atuam antes da
+deduplicação, para que um registro inválido mais recente não esconda o válido anterior.
+A consulta das métricas no event log está em [operação](operacao.md#qualidade-de-dados).
 
 ## Limites demonstrativos de consumo
 

@@ -90,6 +90,55 @@ na bronze e gera o relatório executivo de Campinas. Execute o
 job completo: um full refresh pode recriar a tabela de chamados e remover as máscaras, e
 uma execução direta do pipeline não executa a task de governança.
 
+### Migração do cadastro silver
+
+A `silver.unidades_consumidoras` deixou de ser streaming table e passou a ser materialized
+view deduplicada por UC. Um full refresh não muda o tipo de um dataset: em um ambiente
+implantado antes dessa mudança, remova a streaming table antiga antes do deploy. A silver é
+derivada, e a view é reconstruída a partir da `bronze.unidades_consumidoras`.
+
+1. Confira que a bronze tem o cadastro que será reconstruído:
+
+   ```sql
+   SELECT count(*) AS linhas, count(DISTINCT id_uc) AS ucs FROM grid_dev.bronze.unidades_consumidoras;
+   ```
+
+2. Remova a streaming table antiga da silver:
+
+   ```sql
+   DROP TABLE IF EXISTS grid_dev.silver.unidades_consumidoras;
+   ```
+
+3. Faça o deploy, valide o grafo sem processar dados e rode o job completo, que recria a
+   view, recalcula as tabelas dependentes e reaplica as máscaras:
+
+   ```bash
+   databricks bundle deploy -t dev --profile project_vale_energy
+   databricks bundle run grid_intelligence --validate-only --profile project_vale_energy
+   databricks bundle run processar_grid --profile project_vale_energy
+   ```
+
+4. Confirme uma linha por UC: `SELECT count(*), count(DISTINCT id_uc) FROM grid_dev.silver.unidades_consumidoras`.
+
+Em prod, repita os passos com o catálogo `grid_intelligence` e `-t prod`.
+
+### Qualidade de dados
+
+As expectations da silver registram no event log as linhas aprovadas e as violações.
+Para ver o acumulado por expectation:
+
+```sql
+SELECT e.dataset, e.name AS expectation,
+  sum(e.passed_records) AS aprovadas, sum(e.failed_records) AS violacoes
+FROM (
+  SELECT explode(from_json(details:flow_progress:data_quality:expectations,
+    'array<struct<name:string,dataset:string,passed_records:bigint,failed_records:bigint>>')) AS e
+  FROM event_log(TABLE(grid_dev.silver.consumo_diario))
+  WHERE event_type = 'flow_progress'
+)
+GROUP BY ALL ORDER BY violacoes DESC;
+```
+
 O pipeline usa `usar_ia: "true"` por padrão. Para a rota por regras, ajuste a variável
 `usar_ia` do bundle para `"false"` antes do deploy. A máscara de acesso usa o grupo local
 `atendimento`; a identidade que executa o pipeline precisa pertencer a ele para processar

@@ -1,21 +1,28 @@
 import pytest
-from conftest import consulta_transformacao
+from conftest import aplicar_expectations, consulta_transformacao
 
 pytestmark = pytest.mark.databricks
 
 
-def test_cadastro_normaliza_e_descarta_chaves_invalidas(consultar):
-    """Exercita o SQL de cadastro com classes, bairros e chaves representativos."""
-    consulta = consulta_transformacao("10_silver_cadastro.sql").replace(
-        "STREAM(${catalogo}.${schema_bronze}.unidades_consumidoras)", "origem"
+def test_cadastro_normaliza_deduplica_e_descarta_chaves_invalidas(consultar):
+    """Exercita o cadastro com reenvios, classes, bairros e chaves representativos."""
+    validado = consulta_transformacao("10_silver_cadastro.sql").replace(
+        "${catalogo}.${schema_bronze}.unidades_consumidoras", "origem"
     )
+    validado = aplicar_expectations(validado, "10_silver_cadastro.sql")
+    corrente = consulta_transformacao("10_silver_cadastro.sql", 1).replace("cadastro_validado", "validado")
     linhas = consultar(f"""
-        WITH origem(id_uc, id_conjunto, classe_consumo, bairro) AS (
-          VALUES ('1', 'A', '  RESIDENCIAL ', ''), ('2', 'A', 'Comercial', NULL),
-                 (NULL, 'A', 'rural', 'Centro'), ('3', NULL, 'rural', 'Centro')
-        ), resultado AS ({consulta})
+        WITH origem(id_uc, id_conjunto, classe_consumo, bairro, ingerido_em, ingerido_bronze_em, arquivo_origem) AS (
+          VALUES ('1', 'A', 'rural', 'Antigo', TIMESTAMP'2026-01-01', TIMESTAMP'2026-01-01', 'a.parquet'),
+                 ('1', 'A', '  RESIDENCIAL ', '', TIMESTAMP'2026-02-01', TIMESTAMP'2026-02-01', 'b.parquet'),
+                 ('1', NULL, 'industrial', 'Invalido', TIMESTAMP'2026-03-01', TIMESTAMP'2026-03-01', 'c.parquet'),
+                 ('2', 'A', 'Comercial', NULL, TIMESTAMP'2026-01-01', TIMESTAMP'2026-01-01', 'a.parquet'),
+                 (NULL, 'A', 'rural', 'Centro', TIMESTAMP'2026-01-01', TIMESTAMP'2026-01-01', 'a.parquet'),
+                 ('3', NULL, 'rural', 'Centro', TIMESTAMP'2026-01-01', TIMESTAMP'2026-01-01', 'a.parquet')
+        ), validado AS ({validado}), resultado AS ({corrente})
         SELECT id_uc, classe_consumo, bairro FROM resultado ORDER BY id_uc
     """)
+    # A UC 1 aparece uma vez, na versão válida mais recente: o reenvio inválido é descartado.
     assert linhas == [
         {"id_uc": "1", "classe_consumo": "residencial", "bairro": "nao informado"},
         {"id_uc": "2", "classe_consumo": "comercial", "bairro": "nao informado"},
@@ -47,10 +54,12 @@ def test_interrupcoes_limite_configuravel_e_calculos(consultar, limiar, esperado
 
 
 def test_consumo_limites_nulos_negativos_e_duplicatas(consultar):
-    """Testa as cinco classes e preserva a leitura válida com ingestão mais recente."""
-    consulta = consulta_transformacao("12_silver_consumo.sql")
-    consulta = consulta.replace("${catalogo}.${schema_bronze}.consumo_diario", "origem")
-    consulta = consulta.replace("${catalogo}.${schema_silver}.unidades_consumidoras", "cadastro")
+    """Testa as cinco classes, UC fora do cadastro e preserva a leitura válida mais recente."""
+    validado = consulta_transformacao("12_silver_consumo.sql")
+    validado = validado.replace("${catalogo}.${schema_bronze}.consumo_diario", "origem")
+    validado = validado.replace("${catalogo}.${schema_silver}.unidades_consumidoras", "cadastro")
+    validado = aplicar_expectations(validado, "12_silver_consumo.sql")
+    deduplicado = consulta_transformacao("12_silver_consumo.sql", 1).replace("consumo_validado", "validado")
     linhas = consultar(f"""
         WITH cadastro(id_uc, id_conjunto, nome_conjunto, bairro, classe_consumo) AS (
           VALUES ('r','A','A','B','residencial'), ('c','A','A','B','comercial'),
@@ -63,6 +72,8 @@ def test_consumo_limites_nulos_negativos_e_duplicatas(consultar):
                  ('r', DATE'2026-01-04', -1.0, TIMESTAMP'2026-01-01 01:00:00'),
                  ('r', DATE'2026-01-05', 10.0, TIMESTAMP'2026-01-01 01:00:00'),
                  ('r', DATE'2026-01-05', 20.0, TIMESTAMP'2026-01-01 02:00:00'),
+                 ('r', DATE'2026-01-05', 500.0, TIMESTAMP'2026-01-01 03:00:00'),
+                 ('orfa', DATE'2026-01-01', 10.0, TIMESTAMP'2026-01-01 01:00:00'),
                  ('c', DATE'2026-01-01', 500.0, TIMESTAMP'2026-01-01 01:00:00'),
                  ('c', DATE'2026-01-02', 500.1, TIMESTAMP'2026-01-01 01:00:00'),
                  ('i', DATE'2026-01-01', 10000.0, TIMESTAMP'2026-01-01 01:00:00'),
@@ -71,7 +82,7 @@ def test_consumo_limites_nulos_negativos_e_duplicatas(consultar):
                  ('a', DATE'2026-01-02', 250.1, TIMESTAMP'2026-01-01 01:00:00'),
                  ('p', DATE'2026-01-01', 2000.0, TIMESTAMP'2026-01-01 01:00:00'),
                  ('p', DATE'2026-01-02', 2000.1, TIMESTAMP'2026-01-01 01:00:00')
-        ), resultado AS ({consulta})
+        ), validado AS ({validado}), resultado AS ({deduplicado})
         SELECT id_uc, data, consumo_kwh FROM resultado ORDER BY id_uc, data
     """)
     assert [(r["id_uc"], r["data"], float(r["consumo_kwh"])) for r in linhas] == [
@@ -82,7 +93,7 @@ def test_consumo_limites_nulos_negativos_e_duplicatas(consultar):
 
 def test_baseline_janelas_e_variacao_por_uc_e_conjunto(consultar):
     """Confere os extremos das janelas e as variações com um conjunto de duas UCs."""
-    consulta = consulta_transformacao("12_silver_consumo.sql", 1)
+    consulta = consulta_transformacao("12_silver_consumo.sql", 2)
     consulta = consulta.replace("${catalogo}.${schema_bronze}.consumo_diario", "origem")
     consulta = consulta.replace("${catalogo}.${schema_silver}.consumo_diario", "consumo")
     linhas = consultar(f"""
