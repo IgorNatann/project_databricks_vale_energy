@@ -1,19 +1,28 @@
-CREATE OR REFRESH MATERIALIZED VIEW ${catalogo}.${schema_silver}.consumo_diario
-TBLPROPERTIES ('delta.feature.timestampNtz' = 'supported')
+-- As expectations descartam leituras de UC fora do cadastro e leituras nulas, negativas ou
+-- acima do limite demonstrativo da classe, e medem cada descarte no event log.
+-- Elas atuam antes da deduplicação: uma leitura inválida mais recente não esconde a válida.
+CREATE TEMPORARY VIEW consumo_validado (
+  CONSTRAINT uc_cadastrada EXPECT (id_conjunto IS NOT NULL) ON VIOLATION DROP ROW,
+  CONSTRAINT leitura_plausivel EXPECT (coalesce(id_conjunto IS NULL OR (consumo_kwh >= 0
+    AND consumo_kwh <= CASE classe_consumo
+      WHEN 'residencial' THEN 100
+      WHEN 'comercial' THEN 500
+      WHEN 'industrial' THEN 10000
+      WHEN 'rural' THEN 250
+      WHEN 'poder_publico' THEN 2000
+    END), false)) ON VIOLATION DROP ROW
+)
 AS SELECT
   c.*,
   u.id_conjunto, u.nome_conjunto, u.bairro, u.classe_consumo
 FROM ${catalogo}.${schema_bronze}.consumo_diario c
-JOIN ${catalogo}.${schema_silver}.unidades_consumidoras u ON c.id_uc = u.id_uc
-WHERE c.consumo_kwh >= 0
-  AND c.consumo_kwh <= CASE u.classe_consumo
-    WHEN 'residencial' THEN 100
-    WHEN 'comercial' THEN 500
-    WHEN 'industrial' THEN 10000
-    WHEN 'rural' THEN 250
-    WHEN 'poder_publico' THEN 2000
-  END
-QUALIFY row_number() OVER (PARTITION BY c.id_uc, c.data ORDER BY c.ingerido_em DESC) = 1;
+LEFT JOIN ${catalogo}.${schema_silver}.unidades_consumidoras u ON c.id_uc = u.id_uc;
+
+CREATE OR REFRESH MATERIALIZED VIEW ${catalogo}.${schema_silver}.consumo_diario
+TBLPROPERTIES ('delta.feature.timestampNtz' = 'supported')
+AS SELECT *
+FROM consumo_validado
+QUALIFY row_number() OVER (PARTITION BY id_uc, data ORDER BY ingerido_em DESC) = 1;
 
 CREATE OR REFRESH MATERIALIZED VIEW ${catalogo}.${schema_silver}.baseline_consumo
 TBLPROPERTIES ('delta.feature.timestampNtz' = 'supported')

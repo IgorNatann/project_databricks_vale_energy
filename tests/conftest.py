@@ -64,9 +64,33 @@ def consultar(perfil):
     return executar
 
 
+def instrucao_transformacao(arquivo, indice=0):
+    """Devolve a instrução de criação de tabela, view materializada ou view temporária."""
+    conteudo = (TRANSFORMACOES / arquivo).read_text(encoding="utf-8")
+    instrucoes = [item for item in conteudo.split(";") if re.search(r"CREATE\s+(OR\s+REFRESH|TEMPORARY\s+VIEW)", item)]
+    return instrucoes[indice]
+
+
 def consulta_transformacao(arquivo, indice=0):
     """Extrai a consulta real; os testes substituem apenas as fontes por fixtures SQL."""
-    conteudo = (TRANSFORMACOES / arquivo).read_text(encoding="utf-8")
-    instrucoes = [item for item in conteudo.split(";") if "CREATE OR REFRESH" in item]
-    consulta = re.split(r"\bAS\s+(?=SELECT\b|WITH\b)", instrucoes[indice], maxsplit=1, flags=re.IGNORECASE)[1]
+    instrucao = instrucao_transformacao(arquivo, indice)
+    consulta = re.split(r"\bAS\s+(?=SELECT\b|WITH\b)", instrucao, maxsplit=1, flags=re.IGNORECASE)[1]
     return consulta.strip()
+
+
+def expectations_transformacao(arquivo, indice=0):
+    """Lista as expectations da instrução como pares (nome, expressão, descarta a linha)."""
+    instrucao = instrucao_transformacao(arquivo, indice)
+    padrao = r"CONSTRAINT\s+(\w+)\s+EXPECT\s*\((.*?)\)\s*(ON\s+VIOLATION\s+DROP\s+ROW)?\s*(?=,\s*CONSTRAINT|\)\s*(?:AS|TBLPROPERTIES|COMMENT)\b)"
+    return [
+        (nome, " ".join(expressao.split()), bool(descarta))
+        for nome, expressao, descarta in re.findall(padrao, instrucao, flags=re.DOTALL | re.IGNORECASE)
+    ]
+
+
+def aplicar_expectations(consulta, arquivo, indice=0):
+    """Reproduz as expectations com DROP ROW para testar a consulta fora do pipeline."""
+    filtros = [expressao for _, expressao, descarta in expectations_transformacao(arquivo, indice) if descarta]
+    if not filtros:
+        return consulta
+    return f"SELECT * FROM ({consulta}) WHERE " + " AND ".join(f"({filtro})" for filtro in filtros)

@@ -90,6 +90,36 @@ na bronze e gera o relatório executivo de Campinas. Execute o
 job completo: um full refresh pode recriar a tabela de chamados e remover as máscaras, e
 uma execução direta do pipeline não executa a task de governança.
 
+### Migração do cadastro silver
+
+A `silver.unidades_consumidoras` deixou de ser streaming table e passou a ser materialized
+view deduplicada por UC. Em um ambiente implantado antes dessa mudança, faça um full refresh
+da tabela no primeiro deploy e rode o job completo em seguida, para reaplicar as máscaras:
+
+```bash
+databricks bundle deploy -t dev --profile project_vale_energy
+databricks bundle run grid_intelligence --validate-only --profile project_vale_energy
+databricks bundle run grid_intelligence --full-refresh unidades_consumidoras --profile project_vale_energy
+databricks bundle run processar_grid --profile project_vale_energy
+```
+
+### Qualidade de dados
+
+As expectations da silver registram no event log as linhas aprovadas e as violações.
+Para ver o acumulado por expectation:
+
+```sql
+SELECT e.dataset, e.name AS expectation,
+  sum(e.passed_records) AS aprovadas, sum(e.failed_records) AS violacoes
+FROM (
+  SELECT explode(from_json(details:flow_progress:data_quality:expectations,
+    'array<struct<name:string,dataset:string,passed_records:bigint,failed_records:bigint>>')) AS e
+  FROM event_log(TABLE(grid_dev.silver.consumo_diario))
+  WHERE event_type = 'flow_progress'
+)
+GROUP BY ALL ORDER BY violacoes DESC;
+```
+
 O pipeline usa `usar_ia: "true"` por padrão. Para a rota por regras, ajuste a variável
 `usar_ia` do bundle para `"false"` antes do deploy. A máscara de acesso usa o grupo local
 `atendimento`; a identidade que executa o pipeline precisa pertencer a ele para processar
