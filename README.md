@@ -52,7 +52,7 @@ Uma distribuidora regulada pela ANEEL tem três dores, todas mensuráveis em din
 | Área | Tecnologias |
 |---|---|
 | Governança | Unity Catalog: catálogos por ambiente, volume gerenciado, máscaras de coluna |
-| Engenharia de dados | Lakeflow Declarative Pipelines, streaming tables, materialized views, `read_files` |
+| Engenharia de dados | Lakeflow Declarative Pipelines, streaming tables, materialized views, expectations, `read_files` |
 | Métricas | Metric views do Unity Catalog |
 | IA | AI Functions: `ai_mask`, `ai_classify`, `ai_extract`, `ai_analyze_sentiment`, `ai_gen` |
 | Consumo | Dashboard AI/BI, Genie e notebook de relatório executivo |
@@ -98,6 +98,9 @@ para comparação.
 
 - **A ingestão não corrige nada.** A bronze preserva leituras inválidas de medidor, porque
   elas são um fato sobre o medidor. A limpeza e a regra dos 3 minutos ficam na silver.
+- **Todo descarte é medido.** Os critérios de qualidade da silver são expectations do
+  Lakeflow, com as violações registradas no event log. O cadastro mantém uma linha por UC,
+  para que um reenvio não infle o denominador de DEC e FEC.
 - **Uma única definição de DEC e FEC.** Dashboard, agente e relatório consultam a mesma
   metric view. Uma auditoria manual dos insumos confere o resultado.
 - **Inspeção por dois eixos, nunca por acusação.** Uma UC só é candidata quando cai contra o
@@ -168,9 +171,12 @@ uv run pytest                                   # testes locais
 uv run pytest --databricks --perfil <perfil>    # inclui os testes contra o workspace
 ```
 
-O workflow de [integração contínua](docs/integracao-continua.md) roda Ruff e pytest em todo
-PR, sem credenciais do Databricks. Os testes de integração executam o SQL das
-transformações sobre exemplos pequenos e comparam a bronze com os Parquet do volume.
+O workflow de [integração contínua](docs/integracao-continua.md) roda Ruff e os testes
+locais em todo PR, sem credenciais do Databricks. Isso inclui o contrato de expectations da
+silver. Os testes de regra e de integração rodam com `--databricks`, fora do CI: executam o
+SQL real das transformações sobre exemplos pequenos e comparam a bronze com os Parquet do
+volume. Levá-los para um pipeline de CD é o próximo passo, descrito em
+[evolução](docs/evolucao.md).
 
 ## Documentação
 
@@ -184,6 +190,7 @@ transformações sobre exemplos pequenos e comparam a bronze com os Parquet do v
 | [Validação do agente](docs/validacao-agente-genie.md) e [avaliação do Genie](docs/avaliacao-genie.md) | Conversas de teste e benchmark reproduzível |
 | [Observabilidade e custos](docs/observabilidade-custos.md) | Histórico do job e consumo faturável |
 | [Integração contínua](docs/integracao-continua.md) | O que o CI verifica e o que não verifica |
+| [Evolução planejada](docs/evolucao.md) | Limitações conhecidas, por que ficaram fora e o próximo passo de cada uma |
 | [Roteiro de apresentação](docs/roteiro-apresentacao.md) | Sequência para demonstrar o projeto |
 | [PRD](.llm/prd.md) | Domínio, glossário, regras e modelo de informação |
 | [Escopo](.llm/escopo.md) | O que cada prompt pedia, o que foi entregue e o que ficou fora |
@@ -204,7 +211,12 @@ transformações sobre exemplos pequenos e comparam a bronze com os Parquet do v
 | `docs/` | Regras, resultados e validações |
 | `prompts/` | A sequência de prompts usada na construção |
 
-## Limitações conhecidas
+## Limitações conhecidas e evolução
+
+As limitações abaixo são conhecidas e conscientes para um laboratório. O
+[plano de evolução](docs/evolucao.md) explica por que cada uma ficou fora e qual é o próximo
+passo: produção com workspace e service principal próprios, CD com os testes de regra contra
+o workspace, gatilho por arquivo e alertas de qualidade.
 
 - Os dados são sintéticos; os números descrevem a amostra, podem mudar entre execuções e
   não são conclusões sobre pessoas reais.
