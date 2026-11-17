@@ -3,7 +3,8 @@
 -- denominador de DEC e FEC, e duplicaria os joins de consumo e chamados.
 -- Com milhares de UCs, a materialized view basta. AUTO CDC fica para quando a origem enviar
 -- exclusões ou o histórico do cadastro (SCD tipo 2) for exigido.
--- Ao migrar da streaming table anterior, faça um full refresh desta tabela.
+-- Ao migrar da streaming table anterior, remova-a antes do deploy: um full refresh não muda o
+-- tipo do dataset. A view é reconstruída a partir da bronze (passos em docs/operacao.md).
 
 -- A expectation mede no event log os registros descartados, em vez de um WHERE silencioso.
 CREATE TEMPORARY VIEW cadastro_validado (

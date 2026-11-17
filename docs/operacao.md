@@ -93,15 +93,34 @@ uma execução direta do pipeline não executa a task de governança.
 ### Migração do cadastro silver
 
 A `silver.unidades_consumidoras` deixou de ser streaming table e passou a ser materialized
-view deduplicada por UC. Em um ambiente implantado antes dessa mudança, faça um full refresh
-da tabela no primeiro deploy e rode o job completo em seguida, para reaplicar as máscaras:
+view deduplicada por UC. Um full refresh não muda o tipo de um dataset: em um ambiente
+implantado antes dessa mudança, remova a streaming table antiga antes do deploy. A silver é
+derivada, e a view é reconstruída a partir da `bronze.unidades_consumidoras`.
 
-```bash
-databricks bundle deploy -t dev --profile project_vale_energy
-databricks bundle run grid_intelligence --validate-only --profile project_vale_energy
-databricks bundle run grid_intelligence --full-refresh unidades_consumidoras --profile project_vale_energy
-databricks bundle run processar_grid --profile project_vale_energy
-```
+1. Confira que a bronze tem o cadastro que será reconstruído:
+
+   ```sql
+   SELECT count(*) AS linhas, count(DISTINCT id_uc) AS ucs FROM grid_dev.bronze.unidades_consumidoras;
+   ```
+
+2. Remova a streaming table antiga da silver:
+
+   ```sql
+   DROP TABLE IF EXISTS grid_dev.silver.unidades_consumidoras;
+   ```
+
+3. Faça o deploy, valide o grafo sem processar dados e rode o job completo, que recria a
+   view, recalcula as tabelas dependentes e reaplica as máscaras:
+
+   ```bash
+   databricks bundle deploy -t dev --profile project_vale_energy
+   databricks bundle run grid_intelligence --validate-only --profile project_vale_energy
+   databricks bundle run processar_grid --profile project_vale_energy
+   ```
+
+4. Confirme uma linha por UC: `SELECT count(*), count(DISTINCT id_uc) FROM grid_dev.silver.unidades_consumidoras`.
+
+Em prod, repita os passos com o catálogo `grid_intelligence` e `-t prod`.
 
 ### Qualidade de dados
 
